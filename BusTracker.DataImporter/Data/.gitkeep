@@ -1,0 +1,9 @@
+# IMPORTANTE: Arquivos de Dados não incluídos
+
+Os arquivos CSV necessários para importação (stops.txt e bhtrans_bdlinha.csv) 
+não estão incluídos no repositório devido ao tamanho.
+
+Por favor, faça o download dos dados abertos de Belo Horizonte em:
+https://dados.pbh.gov.br/
+
+Consulte Data/README.md para mais informações.

@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="BusTracker.API/BusTracker.API.csproj" />
+  <Project Path="BusTracker.Core/BusTracker.Core.csproj" />
+  <Project Path="BusTracker.DataImporter/BusTracker.DataImporter.csproj" />
+  <Project Path="BusTracker.Infrastructure/BusTracker.Infrastructure.csproj" />
+  <Project Path="BusTracker.Worker/BusTracker.Worker.csproj" />
+</Solution>
