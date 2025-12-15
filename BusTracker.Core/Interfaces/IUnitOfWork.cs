@@ -23,6 +23,11 @@ namespace BusTracker.Core.Interfaces
         IRepository<BusLine> BusLines { get; }
         
         /// <summary>
+        /// Gets the repository for bus line stops (line-stop relationships).
+        /// </summary>
+        IRepository<BusLineStop> BusLineStops { get; }
+        
+        /// <summary>
         /// Saves all pending changes to the database.
         /// </summary>
         /// <returns>The number of affected records.</returns>

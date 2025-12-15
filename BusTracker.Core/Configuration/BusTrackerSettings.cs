@@ -20,6 +20,16 @@ namespace BusTracker.Core.Configuration
         /// <summary>
         /// Gets or sets how long (in minutes) to retain position data before cleanup.
         /// </summary>
-        public int PositionRetentionMinutes { get; set; } = 10;
+        public int PositionRetentionMinutes { get; set; } = 5;
+
+        /// <summary>
+        /// Gets or sets the time window in minutes for bus arrival predictions.
+        /// </summary>
+        public int PredictionTimeWindowMinutes { get; set; } = 5;
+
+        /// <summary>
+        /// Gets or sets the path to the legacy line mapping CSV file.
+        /// </summary>
+        public string LegacyLineMapPath { get; set; } = "bhtrans_bdlinha.csv";
     }
 }

@@ -55,9 +55,10 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll", policy =>
     {
-        policy.AllowAnyOrigin()
+        policy.SetIsOriginAllowed(origin => true)
               .AllowAnyMethod()
-              .AllowAnyHeader();
+              .AllowAnyHeader()
+              .AllowCredentials();
     });
 });
 
@@ -107,6 +108,8 @@ var app = builder.Build();
 // Middleware
 app.UseMiddleware<GlobalExceptionMiddleware>();
 
+app.UseCors("AllowAll");
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -120,10 +123,10 @@ if (app.Environment.IsDevelopment())
         c.EnableTryItOutByDefault();
     });
 }
-
-app.UseHttpsRedirection();
-
-app.UseCors("AllowAll");
+else
+{
+    app.UseHttpsRedirection();
+}
 
 if (rateLimitSettings.Enabled)
 {

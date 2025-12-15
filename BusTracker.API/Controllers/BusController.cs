@@ -79,6 +79,10 @@ namespace BusTracker.API.Controllers
             {
                 return NotFound(new ErrorResponse { Error = ex.Message });
             }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new ErrorResponse { Error = ex.Message });
+            }
         }
 
         /// <summary>
@@ -105,6 +109,66 @@ namespace BusTracker.API.Controllers
 
             var lines = await _busService.SearchLinesAsync(query);
             return Ok(lines);
+        }
+
+        /// <summary>
+        /// Gets all bus lines that serve a specific stop.
+        /// </summary>
+        /// <param name="stopCode">The bus stop code.</param>
+        /// <returns>A list of lines serving this stop.</returns>
+        /// <response code="200">Returns the list of lines at the stop.</response>
+        /// <response code="404">If the stop is not found.</response>
+        /// <remarks>
+        /// Sample request:
+        /// 
+        ///     GET /api/bus/stop/12345/lines
+        /// 
+        /// </remarks>
+        [HttpGet("stop/{stopCode}/lines")]
+        [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("search")]
+        [ProducesResponseType(typeof(IEnumerable<LineAtStopResponseDto>), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> GetLinesAtStop(string stopCode)
+        {
+            try
+            {
+                var lines = await _busService.GetLinesAtStopAsync(stopCode);
+                return Ok(lines);
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return NotFound(new ErrorResponse { Error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Gets all stops served by a specific bus line.
+        /// </summary>
+        /// <param name="lineNumber">The bus line number.</param>
+        /// <returns>A list of stops on this line, ordered by sequence.</returns>
+        /// <response code="200">Returns the list of stops on the line.</response>
+        /// <response code="404">If the line is not found.</response>
+        /// <remarks>
+        /// Sample request:
+        /// 
+        ///     GET /api/bus/line/5101/stops
+        /// 
+        /// </remarks>
+        [HttpGet("line/{lineNumber}/stops")]
+        [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("search")]
+        [ProducesResponseType(typeof(IEnumerable<StopOnLineResponseDto>), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> GetStopsOnLine(string lineNumber)
+        {
+            try
+            {
+                var stops = await _busService.GetStopsOnLineAsync(lineNumber);
+                return Ok(stops);
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return NotFound(new ErrorResponse { Error = ex.Message });
+            }
         }
     }
 }

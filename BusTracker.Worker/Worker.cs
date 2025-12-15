@@ -8,7 +8,7 @@ using System.Globalization;
 namespace BusTracker.Worker;
 
 /// <summary>
-/// Background service responsible for periodically fetching and updating bus positions.
+/// Background service that continuously fetches and processes real-time bus position data.
 /// </summary>
 public class Worker : BackgroundService
 {
@@ -16,39 +16,47 @@ public class Worker : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly BusTrackerSettings _settings;
+    private readonly LegacyLineService _legacyLineService;
+
+    private Dictionary<string, string> _cachedLineMap = new();
+    private DateTime _lastCacheUpdate = DateTime.MinValue;
 
     public Worker(
         ILogger<Worker> logger,
         IServiceScopeFactory scopeFactory,
         IHttpClientFactory httpClientFactory,
-        IOptions<BusTrackerSettings> settings)
+        IOptions<BusTrackerSettings> settings,
+        LegacyLineService legacyLineService)
     {
         _logger = logger;
         _scopeFactory = scopeFactory;
         _httpClientFactory = httpClientFactory;
         _settings = settings.Value;
+        _legacyLineService = legacyLineService;
     }
 
-    /// <summary>
-    /// Executes the background service, continuously updating bus positions.
-    /// </summary>
-    /// <param name="stoppingToken">Token to monitor for cancellation requests.</param>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
-        var brazilianCulture = new CultureInfo("pt-BR");
+        var culture = CultureInfo.InvariantCulture;
 
-        _logger.LogInformation("Worker service started. Update interval: {Interval}s", _settings.UpdateIntervalSeconds);
+        _logger.LogInformation("Worker started. Update interval: {Interval}s", _settings.UpdateIntervalSeconds);
+
+        var legacyFilePath = Path.IsPathRooted(_settings.LegacyLineMapPath)
+            ? _settings.LegacyLineMapPath
+            : Path.Combine(AppContext.BaseDirectory, _settings.LegacyLineMapPath);
+        _legacyLineService.LoadMap(legacyFilePath);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                await ProcessBusPositionsAsync(geometryFactory, brazilianCulture);
+                await UpdateLineCacheAsync();
+                await ProcessBusPositionsAsync(geometryFactory, culture);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing bus positions");
+                _logger.LogError(ex, "Critical error in Worker cycle");
             }
 
             await Task.Delay(_settings.UpdateIntervalSeconds * 1000, stoppingToken);
@@ -56,42 +64,49 @@ public class Worker : BackgroundService
     }
 
     /// <summary>
-    /// Processes bus position data from the external source and updates the database.
+    /// Updates the line cache from the database periodically (every hour).
+    /// Maps both GTFS external IDs and display numbers to display numbers for flexible matching.
     /// </summary>
-    /// <param name="geometryFactory">Factory for creating geographic points.</param>
-    /// <param name="brazilianCulture">Culture info for parsing Brazilian number formats.</param>
-    private async Task ProcessBusPositionsAsync(GeometryFactory geometryFactory, CultureInfo brazilianCulture)
+    private async Task UpdateLineCacheAsync()
     {
-        _logger.LogInformation("Starting position update cycle");
+        if (_cachedLineMap.Any() && (DateTime.UtcNow - _lastCacheUpdate).TotalHours < 1)
+            return;
 
         using var scope = _scopeFactory.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-        Dictionary<int, string> lineMap;
         try
         {
             var lines = await unitOfWork.BusLines.GetAllAsync();
-            lineMap = lines.ToDictionary(k => k.ExternalId, v => v.DisplayNumber);
+
+            _cachedLineMap = new Dictionary<string, string>();
+
+            foreach (var line in lines)
+            {
+                if (!string.IsNullOrEmpty(line.ExternalId))
+                    _cachedLineMap[line.ExternalId] = line.DisplayNumber;
+
+                if (!string.IsNullOrEmpty(line.DisplayNumber))
+                    _cachedLineMap[line.DisplayNumber] = line.DisplayNumber;
+            }
+
+            _lastCacheUpdate = DateTime.UtcNow;
+            _logger.LogInformation("Line cache updated: {Count} keys mapped", _cachedLineMap.Count);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to load line map, using empty dictionary");
-            lineMap = new Dictionary<int, string>();
+            _logger.LogError(ex, "Failed to update line cache");
         }
+    }
 
-        var retentionThreshold = DateTime.UtcNow.AddMinutes(-_settings.PositionRetentionMinutes);
-        var oldPositions = await unitOfWork.BusPositions.FindAsync(x => x.Timestamp < retentionThreshold);
-
-        if (oldPositions.Any())
-        {
-            unitOfWork.BusPositions.RemoveRange(oldPositions);
-            await unitOfWork.SaveChangesAsync();
-            _logger.LogInformation("Cleaned {Count} old positions", oldPositions.Count());
-        }
-
-        var positions = new List<BusPosition>();
+    /// <summary>
+    /// Fetches bus positions from the CSV endpoint, parses them, and saves to the database.
+    /// Includes intelligent cleanup of old positions and legacy line number translation.
+    /// </summary>
+    private async Task ProcessBusPositionsAsync(GeometryFactory geometryFactory, CultureInfo culture)
+    {
         using var client = _httpClientFactory.CreateClient();
-        client.DefaultRequestHeaders.Add("User-Agent", "BusTrackerApp/1.0");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
         client.Timeout = TimeSpan.FromSeconds(30);
 
         try
@@ -99,7 +114,16 @@ public class Worker : BackgroundService
             var csvContent = await client.GetStringAsync(_settings.PbhDataUrl);
             var csvLines = csvContent.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
-            _logger.LogDebug("Processing {Count} CSV lines", csvLines.Length);
+            if (csvLines.Length <= 1)
+            {
+                _logger.LogWarning("CSV file empty or contains only header");
+                return;
+            }
+
+            _logger.LogInformation("CSV sample line: {Line}", csvLines[1]);
+
+            var positions = new List<BusPosition>();
+            int parseFailures = 0;
 
             for (int i = 1; i < csvLines.Length; i++)
             {
@@ -107,68 +131,82 @@ public class Worker : BackgroundService
 
                 if (columns.Length < 7)
                 {
-                    _logger.LogTrace("Skipping line {Index}: insufficient columns", i);
+                    parseFailures++;
                     continue;
                 }
 
                 try
                 {
-                    if (!int.TryParse(columns[6], out int lineCode))
-                        continue;
-
-                    string displayNumber = lineMap.TryGetValue(lineCode, out var mapped)
-                        ? mapped
-                        : lineCode.ToString();
-
-                    if (!DateTime.TryParseExact(columns[1], "yyyyMMddHHmmss", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime timestamp))
-                        continue;
-
-                    if (!double.TryParse(columns[2], NumberStyles.Any, brazilianCulture, out double lat))
-                        continue;
-
-                    if (!double.TryParse(columns[3], NumberStyles.Any, brazilianCulture, out double lon))
-                        continue;
-
-                    string vehicleNumber = columns[4];
-
-                    positions.Add(new BusPosition
+                    if (!DateTime.TryParseExact(columns[1], "yyyyMMddHHmmss", culture, DateTimeStyles.None, out DateTime timestamp))
                     {
-                        LineNumber = displayNumber,
-                        VehicleNumber = vehicleNumber,
+                        if (!DateTime.TryParse(columns[1], out timestamp))
+                        {
+                            if (parseFailures == 0) _logger.LogWarning("Date parsing error on line {Idx}: Value '{Val}'", i, columns[1]);
+                            parseFailures++;
+                            continue;
+                        }
+                    }
+
+                    var latStr = columns[2].Replace(',', '.');
+                    var lonStr = columns[3].Replace(',', '.');
+
+                    if (!double.TryParse(latStr, NumberStyles.Any, CultureInfo.InvariantCulture, out double lat) ||
+                        !double.TryParse(lonStr, NumberStyles.Any, CultureInfo.InvariantCulture, out double lon))
+                    {
+                        parseFailures++;
+                        continue;
+                    }
+
+                    var rawLineCode = columns[6].Trim();
+                    var translatedLineCode = _legacyLineService.GetDisplayNumber(rawLineCode);
+                    string finalDisplayNumber = _cachedLineMap.TryGetValue(translatedLineCode, out var mappedName)
+                        ? mappedName
+                        : translatedLineCode;
+
+                    var pos = new BusPosition
+                    {
+                        LineNumber = finalDisplayNumber,
+                        VehicleNumber = columns[4],
                         Timestamp = timestamp.ToUniversalTime(),
                         Location = geometryFactory.CreatePoint(new Coordinate(lon, lat))
-                    });
+                    };
+
+                    positions.Add(pos);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    _logger.LogTrace(ex, "Error parsing line {Index}", i);
-                    continue;
+                    parseFailures++;
                 }
             }
+
+            if (parseFailures > 0)
+                _logger.LogWarning("Failed to process {Count} CSV lines (invalid format)", parseFailures);
 
             if (positions.Any())
             {
+                using var scope = _scopeFactory.CreateScope();
+                var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                var retentionThreshold = DateTime.UtcNow.AddMinutes(-_settings.PositionRetentionMinutes);
+                var oldPositions = await unitOfWork.BusPositions.FindAsync(x => x.Timestamp < retentionThreshold);
+                if (oldPositions.Any())
+                {
+                    unitOfWork.BusPositions.RemoveRange(oldPositions);
+                }
+
                 await unitOfWork.BusPositions.AddRangeAsync(positions);
                 await unitOfWork.SaveChangesAsync();
 
-                _logger.LogInformation("Successfully updated {Count} bus positions", positions.Count);
+                _logger.LogInformation("Success: {Count} bus positions updated", positions.Count);
             }
             else
             {
-                _logger.LogWarning("No valid positions found in CSV data");
+                _logger.LogWarning("No valid positions found to save");
             }
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogError(ex, "HTTP error downloading data from PBH");
-        }
-        catch (TaskCanceledException ex)
-        {
-            _logger.LogWarning(ex, "Request timeout downloading data from PBH");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Unexpected error processing bus positions");
+            _logger.LogError(ex, "Network error accessing PBH: {Msg}", ex.Message);
         }
     }
 }

@@ -29,5 +29,19 @@ namespace BusTracker.Core.Interfaces.Services
         /// <param name="lineNumber">The bus line number.</param>
         /// <returns>Prediction information with distance and estimated time, including second closest bus.</returns>
         Task<BusPredictionResponseDto> GetPredictionAsync(string stopCode, string lineNumber);
+        
+        /// <summary>
+        /// Gets all bus lines that serve a specific stop.
+        /// </summary>
+        /// <param name="stopCode">The bus stop code.</param>
+        /// <returns>A collection of lines serving this stop.</returns>
+        Task<IEnumerable<LineAtStopResponseDto>> GetLinesAtStopAsync(string stopCode);
+        
+        /// <summary>
+        /// Gets all stops served by a specific bus line.
+        /// </summary>
+        /// <param name="lineNumber">The bus line number.</param>
+        /// <returns>A collection of stops on this line, ordered by sequence.</returns>
+        Task<IEnumerable<StopOnLineResponseDto>> GetStopsOnLineAsync(string lineNumber);
     }
 }

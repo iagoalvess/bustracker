@@ -11,9 +11,9 @@
         public int Id { get; set; }
         
         /// <summary>
-        /// Gets or sets the external system identifier for this line.
+        /// Gets or sets the external system identifier for this line (GTFS route_id).
         /// </summary>
-        public int ExternalId { get; set; }
+        public required string ExternalId { get; set; }
         
         /// <summary>
         /// Gets or sets the line number displayed to users.

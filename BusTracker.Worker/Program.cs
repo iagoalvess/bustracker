@@ -15,6 +15,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddHttpClient();
+builder.Services.AddSingleton<LegacyLineService>();
 builder.Services.AddHostedService<Worker>();
 
 var host = builder.Build();

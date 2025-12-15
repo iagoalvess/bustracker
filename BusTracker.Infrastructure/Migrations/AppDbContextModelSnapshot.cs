@@ -36,8 +36,9 @@ namespace BusTracker.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<int>("ExternalId")
-                        .HasColumnType("integer");
+                    b.Property<string>("ExternalId")
+                        .IsRequired()
+                        .HasColumnType("text");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -46,6 +47,35 @@ namespace BusTracker.Infrastructure.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("BusLines");
+                });
+
+            modelBuilder.Entity("BusTracker.Core.Entities.BusLineStop", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("BusLineId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("BusStopId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("SubLineName")
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusStopId");
+
+                    b.HasIndex("BusLineId", "BusStopId");
+
+                    b.ToTable("BusLineStops");
                 });
 
             modelBuilder.Entity("BusTracker.Core.Entities.BusPosition", b =>
@@ -105,6 +135,25 @@ namespace BusTracker.Infrastructure.Migrations
                     NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Location"), "gist");
 
                     b.ToTable("BusStops");
+                });
+
+            modelBuilder.Entity("BusTracker.Core.Entities.BusLineStop", b =>
+                {
+                    b.HasOne("BusTracker.Core.Entities.BusLine", "BusLine")
+                        .WithMany()
+                        .HasForeignKey("BusLineId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("BusTracker.Core.Entities.BusStop", "BusStop")
+                        .WithMany()
+                        .HasForeignKey("BusStopId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("BusLine");
+
+                    b.Navigation("BusStop");
                 });
 #pragma warning restore 612, 618
         }

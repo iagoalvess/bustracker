@@ -6,100 +6,168 @@ using CsvHelper.Configuration;
 using Microsoft.EntityFrameworkCore;
 using NetTopologySuite.Geometries;
 using System.Globalization;
-using System.Text;
 
 var baseDirectory = AppContext.BaseDirectory;
 var dataDirectory = Path.Combine(baseDirectory, "Data");
 
+var stopsFilePath = Path.Combine(dataDirectory, "stops.txt");
+var routesFilePath = Path.Combine(dataDirectory, "routes.txt");
+var tripsFilePath = Path.Combine(dataDirectory, "trips.txt");
+var stopTimesFilePath = Path.Combine(dataDirectory, "stop_times.txt");
+
 var connectionString = Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection")
     ?? "Host=localhost;Database=BusTrackerDb;Username=postgres;Password=123";
-
-var stopsFilePath = Environment.GetEnvironmentVariable("DataImport__StopsFile")
-    ?? Path.Combine(dataDirectory, "stops.txt");
-
-var linesFilePath = Environment.GetEnvironmentVariable("DataImport__LinesFile")
-    ?? Path.Combine(dataDirectory, "bhtrans_bdlinha.csv");
 
 var optionsBuilder = new DbContextOptionsBuilder<AppDbContext>();
 optionsBuilder.UseNpgsql(connectionString, o => o.UseNetTopologySuite());
 
-Console.WriteLine("=== Bus Stops Importer ===");
+Console.WriteLine("=== GTFS Importer Started ===");
+
+var csvConfig = new CsvConfiguration(CultureInfo.InvariantCulture)
+{
+    Delimiter = ",",
+    HasHeaderRecord = true,
+    MissingFieldFound = null,
+    HeaderValidated = null,
+    BadDataFound = null
+};
 
 using (var context = new AppDbContext(optionsBuilder.Options))
 {
-    Console.WriteLine("Clearing old data");
+    Console.WriteLine("1. Importing Stops...");
     await context.Database.ExecuteSqlRawAsync("TRUNCATE TABLE \"BusStops\" RESTART IDENTITY CASCADE");
 
-    var config = new CsvConfiguration(CultureInfo.InvariantCulture)
+    if (!File.Exists(stopsFilePath)) throw new FileNotFoundException("stops.txt not found", stopsFilePath);
+
+    using var reader = new StreamReader(stopsFilePath);
+    using var csv = new CsvReader(reader, csvConfig);
+
+    var records = csv.GetRecords<StopGtfsDTO>();
+    var geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
+    var stopsToSave = new List<BusStop>();
+
+    foreach (var record in records)
     {
-        Delimiter = ",",
-        HasHeaderRecord = true,
-        MissingFieldFound = null,
-        HeaderValidated = null
-    };
-
-    using (var reader = new StreamReader(stopsFilePath))
-    using (var csv = new CsvReader(reader, config))
-    {
-        var records = csv.GetRecords<StopGtfsDTO>();
-        var geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
-
-        var stopsToSave = new List<BusStop>();
-
-        foreach (var record in records)
+        stopsToSave.Add(new BusStop
         {
-            if (string.IsNullOrWhiteSpace(record.StopName)) continue;
-
-            var newStop = new BusStop
-            {
-                Code = record.StopId,
-                Name = record.StopName,
-                Location = geometryFactory.CreatePoint(new Coordinate(record.Longitude, record.Latitude))
-            };
-
-            stopsToSave.Add(newStop);
-        }
-
-        Console.WriteLine($"{stopsToSave.Count} stops inserted.");
-
-        await context.BusStops.AddRangeAsync(stopsToSave);
-        await context.SaveChangesAsync();
+            Code = record.StopId,
+            Name = record.StopName,
+            Location = geometryFactory.CreatePoint(new Coordinate(record.Longitude, record.Latitude))
+        });
     }
-}
 
-Console.WriteLine("=== Bus Lines Importer ===");
+    await context.BusStops.AddRangeAsync(stopsToSave);
+    await context.SaveChangesAsync();
+    Console.WriteLine($" -> {stopsToSave.Count} stops imported.");
+}
 
 using (var context = new AppDbContext(optionsBuilder.Options))
 {
-    Console.WriteLine("Clearing old data");
+    Console.WriteLine("2. Importing Routes...");
     await context.Database.ExecuteSqlRawAsync("TRUNCATE TABLE \"BusLines\" RESTART IDENTITY CASCADE");
 
-    var config = new CsvConfiguration(CultureInfo.InvariantCulture)
-    {
-        Delimiter = ";",
-        HasHeaderRecord = true,
-    };
+    if (!File.Exists(routesFilePath)) throw new FileNotFoundException("routes.txt not found", routesFilePath);
 
-    using (var reader = new StreamReader(linesFilePath, Encoding.UTF8))
-    using (var csv = new CsvReader(reader, config))
-    {
-        var records = csv.GetRecords<BusLineCsvDTO>();
-        var linesToSave = new List<BusLine>();
+    using var reader = new StreamReader(routesFilePath);
+    using var csv = new CsvReader(reader, csvConfig);
 
-        Console.WriteLine("Reading lines...");
-        foreach (var record in records)
+    var records = csv.GetRecords<RouteGtfsDTO>();
+    var linesToSave = new List<BusLine>();
+
+    foreach (var r in records)
+    {
+        linesToSave.Add(new BusLine
         {
-            linesToSave.Add(new BusLine
-            {
-                ExternalId = record.LineNumber,
-                DisplayNumber = record.Line,
-                Name = record.Name
-            });
-        }
-
-        Console.WriteLine($"{linesToSave.Count} lines inserted.");
-        await context.BusLines.AddRangeAsync(linesToSave);
-        await context.SaveChangesAsync();
+            ExternalId = r.RouteId,
+            DisplayNumber = r.ShortName,
+            Name = r.LongName
+        });
     }
+
+    await context.BusLines.AddRangeAsync(linesToSave);
+    await context.SaveChangesAsync();
+    Console.WriteLine($" -> {linesToSave.Count} lines imported.");
 }
 
+using (var context = new AppDbContext(optionsBuilder.Options))
+{
+    Console.WriteLine("3. Processing Relationships (This may take a while)...");
+    await context.Database.ExecuteSqlRawAsync("TRUNCATE TABLE \"BusLineStops\" RESTART IDENTITY CASCADE");
+
+    if (!File.Exists(tripsFilePath)) throw new FileNotFoundException("trips.txt not found", tripsFilePath);
+    if (!File.Exists(stopTimesFilePath)) throw new FileNotFoundException("stop_times.txt not found", stopTimesFilePath);
+
+    var routeMap = await context.BusLines.ToDictionaryAsync(x => x.ExternalId, x => x.Id);
+    var stopMap = await context.BusStops.ToDictionaryAsync(x => x.Code, x => x.Id);
+
+    Console.WriteLine("   -> Caching Trips...");
+    var tripToRouteMap = new Dictionary<string, string>();
+
+    using (var rTrips = new StreamReader(tripsFilePath))
+    using (var csvTrips = new CsvReader(rTrips, csvConfig))
+    {
+        var trips = csvTrips.GetRecords<TripGtfsDTO>();
+        foreach (var t in trips)
+        {
+            tripToRouteMap[t.TripId] = t.RouteId;
+        }
+    }
+    Console.WriteLine($"   -> Cached {tripToRouteMap.Count} trips.");
+
+    Console.WriteLine("   -> Streaming StopTimes and building unique connections...");
+
+    var uniqueConnections = new HashSet<(int LineId, int StopId)>();
+
+    using (var rStops = new StreamReader(stopTimesFilePath))
+    using (var csvStops = new CsvReader(rStops, csvConfig))
+    {
+        var stopTimes = csvStops.GetRecords<StopTimeGtfsDTO>();
+
+        int rowCount = 0;
+        foreach (var st in stopTimes)
+        {
+            rowCount++;
+            if (rowCount % 100000 == 0) Console.Write(".");
+
+            if (!tripToRouteMap.TryGetValue(st.TripId, out var routeGtfsId)) continue;
+            if (!routeMap.TryGetValue(routeGtfsId, out var dbLineId)) continue;
+            if (!stopMap.TryGetValue(st.StopId, out var dbStopId)) continue;
+
+            uniqueConnections.Add((dbLineId, dbStopId));
+        }
+    }
+    Console.WriteLine();
+    Console.WriteLine($"   -> Found {uniqueConnections.Count} unique Line-Stop relationships.");
+
+    Console.WriteLine("   -> Saving to database...");
+    var batch = new List<BusLineStop>();
+    int count = 0;
+
+    foreach (var conn in uniqueConnections)
+    {
+        batch.Add(new BusLineStop
+        {
+            BusLineId = conn.LineId,
+            BusStopId = conn.StopId,
+            Sequence = 0
+        });
+
+        count++;
+        if (count % 5000 == 0)
+        {
+            await context.BusLineStops.AddRangeAsync(batch);
+            await context.SaveChangesAsync();
+            batch.Clear();
+            Console.Write("+");
+        }
+    }
+
+    if (batch.Any())
+    {
+        await context.BusLineStops.AddRangeAsync(batch);
+        await context.SaveChangesAsync();
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("=== Import Complete Successfully ===");
+}

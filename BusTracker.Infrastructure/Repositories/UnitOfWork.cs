@@ -14,6 +14,7 @@ namespace BusTracker.Infrastructure.Repositories
         private IRepository<BusStop>? _busStops;
         private IRepository<BusPosition>? _busPositions;
         private IRepository<BusLine>? _busLines;
+        private IRepository<BusLineStop>? _busLineStops;
 
         public UnitOfWork(AppDbContext context)
         {
@@ -42,6 +43,14 @@ namespace BusTracker.Infrastructure.Repositories
         public IRepository<BusLine> BusLines
         {
             get { return _busLines ??= new Repository<BusLine>(_context); }
+        }
+
+        /// <summary>
+        /// Gets the repository for BusLineStop entities.
+        /// </summary>
+        public IRepository<BusLineStop> BusLineStops
+        {
+            get { return _busLineStops ??= new Repository<BusLineStop>(_context); }
         }
 
         /// <summary>

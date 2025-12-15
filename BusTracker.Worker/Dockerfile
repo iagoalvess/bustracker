@@ -22,4 +22,7 @@ FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
 
+# Create data directory for legacy line map and other files
+RUN mkdir -p /app/data
+
 ENTRYPOINT ["dotnet", "BusTracker.Worker.dll"]

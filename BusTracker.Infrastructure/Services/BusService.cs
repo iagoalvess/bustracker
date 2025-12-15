@@ -2,6 +2,8 @@ using BusTracker.Core.DTOs;
 using BusTracker.Core.Entities;
 using BusTracker.Core.Interfaces;
 using BusTracker.Core.Interfaces.Services;
+using BusTracker.Infrastructure.Data;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace BusTracker.Infrastructure.Services
@@ -14,12 +16,14 @@ namespace BusTracker.Infrastructure.Services
         private readonly IUnitOfWork _unitOfWork;
         private readonly IDistanceCalculator _distanceCalculator;
         private readonly ILogger<BusService> _logger;
+        private readonly AppDbContext _context;
 
-        public BusService(IUnitOfWork unitOfWork, IDistanceCalculator distanceCalculator, ILogger<BusService> logger)
+        public BusService(IUnitOfWork unitOfWork, IDistanceCalculator distanceCalculator, ILogger<BusService> logger, AppDbContext context)
         {
             _unitOfWork = unitOfWork;
             _distanceCalculator = distanceCalculator;
             _logger = logger;
+            _context = context;
         }
 
         /// <summary>
@@ -90,6 +94,17 @@ namespace BusTracker.Infrastructure.Services
             }
 
             var cleanLine = lineNumber.Trim().ToLower();
+            
+            var lineStopsExist = await _context.BusLineStops
+                .Include(bls => bls.BusLine)
+                .AnyAsync(bls => bls.BusStopId == stop.Id && 
+                                 bls.BusLine.DisplayNumber.ToLower().Contains(cleanLine));
+            
+            if (!lineStopsExist)
+            {
+                throw new InvalidOperationException($"Line {lineNumber} does not serve stop {stopCode}.");
+            }
+
             var timeWindow = DateTime.UtcNow.AddMinutes(-5);
 
             var allPositions = await _unitOfWork.BusPositions.FindAsync(
@@ -124,7 +139,6 @@ namespace BusTracker.Infrastructure.Services
                 }
             }
 
-            // Order all candidates by distance so we can get first and second closest.
             var ordered = candidates.OrderBy(x => x.Distance).ToList();
 
             if (!ordered.Any())
@@ -138,8 +152,7 @@ namespace BusTracker.Infrastructure.Services
 
             var bestBus = ordered[0];
 
-            // Function local para calcular tempo/distancia para um candidato especifico.
-            BusPredictionResponseDto MapCandidate((BusPosition Bus, double Distance) candidate)
+            static BusPredictionResponseDto MapCandidate((BusPosition Bus, double Distance) candidate)
             {
                 double straightDistance = candidate.Distance;
                 double tortuosityFactor = straightDistance < 500 ? 1.2 : 1.35;
@@ -159,7 +172,6 @@ namespace BusTracker.Infrastructure.Services
 
             var result = MapCandidate(bestBus);
 
-            // Se existir um segundo mais proximo, calcula e devolve tambem.
             if (ordered.Count > 1)
             {
                 var secondBus = ordered[1];
@@ -167,6 +179,68 @@ namespace BusTracker.Infrastructure.Services
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Gets all bus lines that serve a specific stop.
+        /// </summary>
+        /// <param name="stopCode">The bus stop code.</param>
+        /// <returns>A collection of lines serving this stop.</returns>
+        public async Task<IEnumerable<LineAtStopResponseDto>> GetLinesAtStopAsync(string stopCode)
+        {
+            var stop = await _unitOfWork.BusStops.FirstOrDefaultAsync(s => s.Code == stopCode);
+            
+            if (stop == null)
+            {
+                throw new KeyNotFoundException("Stop not found.");
+            }
+
+            var lineStops = await _context.BusLineStops
+                .Include(bls => bls.BusLine)
+                .Where(bls => bls.BusStopId == stop.Id)
+                .ToListAsync();
+            
+            return lineStops
+                .GroupBy(bls => new { bls.BusLine.DisplayNumber, bls.BusLine.Name })
+                .Select(g => new LineAtStopResponseDto
+                {
+                    LineNumber = g.Key.DisplayNumber,
+                    LineName = g.Key.Name,
+                    SubLineName = g.FirstOrDefault()?.SubLineName
+                })
+                .OrderBy(l => l.LineNumber);
+        }
+
+        /// <summary>
+        /// Gets all stops served by a specific bus line.
+        /// </summary>
+        /// <param name="lineNumber">The bus line number.</param>
+        /// <returns>A collection of stops on this line, ordered by sequence.</returns>
+        public async Task<IEnumerable<StopOnLineResponseDto>> GetStopsOnLineAsync(string lineNumber)
+        {
+            var cleanLine = lineNumber.Trim().ToLower();
+            
+            var lineStops = await _context.BusLineStops
+                .Include(bls => bls.BusLine)
+                .Include(bls => bls.BusStop)
+                .Where(bls => bls.BusLine.DisplayNumber.ToLower().Contains(cleanLine))
+                .ToListAsync();
+            
+            if (!lineStops.Any())
+            {
+                throw new KeyNotFoundException($"Line {lineNumber} not found or has no stops.");
+            }
+
+            return lineStops
+                .OrderBy(bls => bls.Sequence)
+                .Select(bls => new StopOnLineResponseDto
+                {
+                    StopCode = bls.BusStop.Code,
+                    StopName = bls.BusStop.Name,
+                    Sequence = bls.Sequence,
+                    Longitude = bls.BusStop.Location.X,
+                    Latitude = bls.BusStop.Location.Y
+                });
         }
     }
 }
