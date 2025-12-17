@@ -5,19 +5,21 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace BusTracker.API.Controllers
 {
+    /// <summary>
+    /// Controller for bus-related operations including searching stops, lines, and getting predictions.
+    /// </summary>
+    /// <remarks>
+    /// Initializes a new instance of the <see cref="BusController"/> class.
+    /// </remarks>
+    /// <param name="busService">The bus service for business operations.</param>
     [ApiController]
     [Route("api/[controller]")]
     [Produces("application/json")]
-    public class BusController : ControllerBase
+    public class BusController(IBusService busService) : ControllerBase
     {
-        private readonly IBusService _busService;
-        private readonly ILogger<BusController> _logger;
+        private const int MinQueryLength = 3;
 
-        public BusController(IBusService busService, ILogger<BusController> logger)
-        {
-            _busService = busService;
-            _logger = logger;
-        }
+        private readonly IBusService _busService = busService;
 
         /// <summary>
         /// Searches for bus stops by name or code.
@@ -38,8 +40,8 @@ namespace BusTracker.API.Controllers
         [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status400BadRequest)]
         public async Task<IActionResult> SearchStops([FromQuery] string query)
         {
-            if (string.IsNullOrEmpty(query) || query.Length < 3)
-                return BadRequest(new ErrorResponse { Error = "Please enter at least 3 characters." });
+            if (string.IsNullOrEmpty(query) || query.Length < MinQueryLength)
+                return BadRequest(new ErrorResponse { Error = $"Please enter at least {MinQueryLength} characters." });
 
             var stops = await _busService.SearchStopsAsync(query);
             return Ok(stops);

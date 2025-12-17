@@ -34,6 +34,12 @@ namespace BusTracker.Core.Interfaces
         /// <param name="predicate">The filter expression.</param>
         /// <returns>The first matching entity or null.</returns>
         Task<T?> FirstOrDefaultAsync(Expression<Func<T, bool>> predicate);
+
+        /// <summary>
+        /// Gets an IQueryable for advanced query operations like bulk delete.
+        /// </summary>
+        /// <returns>An IQueryable for the entity type.</returns>
+        IQueryable<T> GetQueryable();
         
         /// <summary>
         /// Adds a new entity to the repository.

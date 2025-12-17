@@ -13,11 +13,39 @@ namespace BusTracker.Infrastructure.Services
     /// </summary>
     public class BusService : IBusService
     {
+        private const int MinQueryLength = 3;
+        private const int MaxStopResults = 20;
+        private const int MaxLineResults = 30;
+        private const int PositionTimeWindowMinutes = 5;
+        private const double StopProximityThresholdMeters = 150;
+        private const double MovingAwayMultiplier = 1.5;
+        private const double MovingAwayMinDeltaMeters = 100;
+        private const int MinPositionsForTrajectoryAnalysis = 3;
+        private const int MinPositionsAfterMinForAnalysis = 2;
+        private const double DistanceToleranceMeters = 20;
+        private const double PassedStopDeltaMeters = 200;
+        private const double CloseProximityMeters = 100;
+        private const double StationaryToleranceMeters = 30;
+        private const double SinglePositionMaxDistanceMeters = 500;
+        private const double ShortDistanceThresholdMeters = 500;
+        private const double ShortDistanceTortuosityFactor = 1.2;
+        private const double LongDistanceTortuosityFactor = 1.35;
+        private const double AverageSpeedMetersPerMinute = 190;
+        private const double TrafficDelayPerKilometer = 0.6;
+        private const int MetersPerKilometer = 1000;
+
         private readonly IUnitOfWork _unitOfWork;
         private readonly IDistanceCalculator _distanceCalculator;
         private readonly ILogger<BusService> _logger;
         private readonly AppDbContext _context;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="BusService"/> class.
+        /// </summary>
+        /// <param name="unitOfWork">The unit of work for data access.</param>
+        /// <param name="distanceCalculator">The distance calculator service.</param>
+        /// <param name="logger">The logger instance.</param>
+        /// <param name="context">The database context.</param>
         public BusService(IUnitOfWork unitOfWork, IDistanceCalculator distanceCalculator, ILogger<BusService> logger, AppDbContext context)
         {
             _unitOfWork = unitOfWork;
@@ -26,14 +54,10 @@ namespace BusTracker.Infrastructure.Services
             _context = context;
         }
 
-        /// <summary>
-        /// Searches for bus stops matching the provided query.
-        /// </summary>
-        /// <param name="query">Search term (minimum 3 characters).</param>
-        /// <returns>A collection of matching bus stops.</returns>
+        /// <inheritdoc />
         public async Task<IEnumerable<BusStopResponseDto>> SearchStopsAsync(string query)
         {
-            if (string.IsNullOrEmpty(query) || query.Length < 3)
+            if (string.IsNullOrEmpty(query) || query.Length < MinQueryLength)
             {
                 return Enumerable.Empty<BusStopResponseDto>();
             }
@@ -42,7 +66,7 @@ namespace BusTracker.Infrastructure.Services
             var stops = await _unitOfWork.BusStops.FindAsync(
                 s => s.Name.ToLower().Contains(queryLower) || s.Code == query);
 
-            return stops.Take(20).Select(s => new BusStopResponseDto
+            return stops.Take(MaxStopResults).Select(s => new BusStopResponseDto
             {
                 Code = s.Code,
                 Name = s.Name,
@@ -51,11 +75,7 @@ namespace BusTracker.Infrastructure.Services
             });
         }
 
-        /// <summary>
-        /// Searches for bus lines matching the provided query.
-        /// </summary>
-        /// <param name="query">Search term for line number or name.</param>
-        /// <returns>A collection of matching bus lines.</returns>
+        /// <inheritdoc />
         public async Task<IEnumerable<BusLineResponseDto>> SearchLinesAsync(string query)
         {
             if (string.IsNullOrWhiteSpace(query))
@@ -69,7 +89,7 @@ namespace BusTracker.Infrastructure.Services
 
             return lines
                 .OrderBy(x => x.DisplayNumber)
-                .Take(30)
+                .Take(MaxLineResults)
                 .Select(x => new BusLineResponseDto
                 {
                     Id = x.Id,
@@ -78,12 +98,7 @@ namespace BusTracker.Infrastructure.Services
                 });
         }
 
-        /// <summary>
-        /// Gets arrival prediction for a specific bus line at a stop.
-        /// </summary>
-        /// <param name="stopCode">The bus stop code.</param>
-        /// <param name="lineNumber">The bus line number.</param>
-        /// <returns>Prediction information with distance and estimated time.</returns>
+        /// <inheritdoc />
         public async Task<BusPredictionResponseDto> GetPredictionAsync(string stopCode, string lineNumber)
         {
             var stop = await _unitOfWork.BusStops.FirstOrDefaultAsync(s => s.Code == stopCode);
@@ -105,14 +120,14 @@ namespace BusTracker.Infrastructure.Services
                 throw new InvalidOperationException($"Line {lineNumber} does not serve stop {stopCode}.");
             }
 
-            var timeWindow = DateTime.UtcNow.AddMinutes(-5);
+            var timeWindow = DateTime.UtcNow.AddMinutes(-PositionTimeWindowMinutes);
 
             var allPositions = await _unitOfWork.BusPositions.FindAsync(
                 b => b.LineNumber.ToLower().Contains(cleanLine) && b.Timestamp >= timeWindow);
 
             var positionsList = allPositions.ToList();
 
-            if (!positionsList.Any())
+            if (positionsList.Count == 0)
             {
                 return new BusPredictionResponseDto
                 {
@@ -126,22 +141,81 @@ namespace BusTracker.Infrastructure.Services
 
             foreach (var vehicleGroup in vehicles)
             {
-                var trajectory = vehicleGroup.OrderByDescending(x => x.Timestamp).Take(2).ToList();
+                var allVehiclePositions = vehicleGroup.OrderBy(x => x.Timestamp).ToList();
+                
+                if (allVehiclePositions.Count == 0)
+                    continue;
 
-                if (trajectory.Count >= 1)
+                var distancesOverTime = allVehiclePositions.Select(pos => new
                 {
-                    var current = trajectory[0];
-                    var distance = _distanceCalculator.CalculateDistanceInMeters(
+                    Position = pos,
+                    Distance = _distanceCalculator.CalculateDistanceInMeters(
                         stop.Location.Y, stop.Location.X,
-                        current.Location.Y, current.Location.X);
+                        pos.Location.Y, pos.Location.X)
+                }).ToList();
 
-                    candidates.Add((current, distance));
+                var currentDistance = distancesOverTime.Last().Distance;
+                var minHistoricalDistance = distancesOverTime.Min(x => x.Distance);
+                var minDistanceIndex = distancesOverTime.FindIndex(x => x.Distance == minHistoricalDistance);
+
+                bool hasPassedStop = false;
+
+                if (minHistoricalDistance < StopProximityThresholdMeters && 
+                    currentDistance > minHistoricalDistance * MovingAwayMultiplier && 
+                    currentDistance > minHistoricalDistance + MovingAwayMinDeltaMeters)
+                {
+                    hasPassedStop = true;
+                }
+                else if (distancesOverTime.Count >= MinPositionsForTrajectoryAnalysis)
+                {
+                    var positionsAfterMin = distancesOverTime.Skip(minDistanceIndex).ToList();
+                    
+                    if (positionsAfterMin.Count >= MinPositionsAfterMinForAnalysis)
+                    {
+                        bool isMovingAway = true;
+                        for (int i = 1; i < positionsAfterMin.Count; i++)
+                        {
+                            if (positionsAfterMin[i].Distance < positionsAfterMin[i - 1].Distance - DistanceToleranceMeters)
+                            {
+                                isMovingAway = false;
+                                break;
+                            }
+                        }
+
+                        if (isMovingAway && currentDistance > minHistoricalDistance + PassedStopDeltaMeters)
+                        {
+                            hasPassedStop = true;
+                        }
+                    }
+                }
+
+                if (hasPassedStop)
+                {
+                    continue;
+                }
+
+                if (distancesOverTime.Count >= 2)
+                {
+                    var previousDistance = distancesOverTime[distancesOverTime.Count - 2].Distance;
+
+                    if (currentDistance < previousDistance || 
+                        (currentDistance < CloseProximityMeters && Math.Abs(currentDistance - previousDistance) < StationaryToleranceMeters))
+                    {
+                        candidates.Add((distancesOverTime.Last().Position, currentDistance));
+                    }
+                }
+                else
+                {
+                    if (currentDistance < SinglePositionMaxDistanceMeters)
+                    {
+                        candidates.Add((distancesOverTime.Last().Position, currentDistance));
+                    }
                 }
             }
 
             var ordered = candidates.OrderBy(x => x.Distance).ToList();
 
-            if (!ordered.Any())
+            if (ordered.Count == 0)
             {
                 return new BusPredictionResponseDto
                 {
@@ -151,25 +225,6 @@ namespace BusTracker.Infrastructure.Services
             }
 
             var bestBus = ordered[0];
-
-            static BusPredictionResponseDto MapCandidate((BusPosition Bus, double Distance) candidate)
-            {
-                double straightDistance = candidate.Distance;
-                double tortuosityFactor = straightDistance < 500 ? 1.2 : 1.35;
-                double estimatedRoadDistance = straightDistance * tortuosityFactor;
-                double speedMetersPerMinute = 190;
-                double timeInMinutes = estimatedRoadDistance / speedMetersPerMinute;
-                timeInMinutes += (estimatedRoadDistance / 1000) * 0.6;
-
-                return new BusPredictionResponseDto
-                {
-                    Line = candidate.Bus.LineNumber,
-                    Vehicle = candidate.Bus.VehicleNumber,
-                    DistanceInMeters = Math.Round(estimatedRoadDistance),
-                    TimeInMinutes = Math.Round(timeInMinutes)
-                };
-            }
-
             var result = MapCandidate(bestBus);
 
             if (ordered.Count > 1)
@@ -181,11 +236,7 @@ namespace BusTracker.Infrastructure.Services
             return result;
         }
 
-        /// <summary>
-        /// Gets all bus lines that serve a specific stop.
-        /// </summary>
-        /// <param name="stopCode">The bus stop code.</param>
-        /// <returns>A collection of lines serving this stop.</returns>
+        /// <inheritdoc />
         public async Task<IEnumerable<LineAtStopResponseDto>> GetLinesAtStopAsync(string stopCode)
         {
             var stop = await _unitOfWork.BusStops.FirstOrDefaultAsync(s => s.Code == stopCode);
@@ -205,17 +256,12 @@ namespace BusTracker.Infrastructure.Services
                 .Select(g => new LineAtStopResponseDto
                 {
                     LineNumber = g.Key.DisplayNumber,
-                    LineName = g.Key.Name,
-                    SubLineName = g.FirstOrDefault()?.SubLineName
+                    LineName = g.Key.Name
                 })
                 .OrderBy(l => l.LineNumber);
         }
 
-        /// <summary>
-        /// Gets all stops served by a specific bus line.
-        /// </summary>
-        /// <param name="lineNumber">The bus line number.</param>
-        /// <returns>A collection of stops on this line, ordered by sequence.</returns>
+        /// <inheritdoc />
         public async Task<IEnumerable<StopOnLineResponseDto>> GetStopsOnLineAsync(string lineNumber)
         {
             var cleanLine = lineNumber.Trim().ToLower();
@@ -241,6 +287,25 @@ namespace BusTracker.Infrastructure.Services
                     Longitude = bls.BusStop.Location.X,
                     Latitude = bls.BusStop.Location.Y
                 });
+        }
+
+        private static BusPredictionResponseDto MapCandidate((BusPosition Bus, double Distance) candidate)
+        {
+            double straightDistance = candidate.Distance;
+            double tortuosityFactor = straightDistance < ShortDistanceThresholdMeters 
+                ? ShortDistanceTortuosityFactor 
+                : LongDistanceTortuosityFactor;
+            double estimatedRoadDistance = straightDistance * tortuosityFactor;
+            double timeInMinutes = estimatedRoadDistance / AverageSpeedMetersPerMinute;
+            timeInMinutes += (estimatedRoadDistance / MetersPerKilometer) * TrafficDelayPerKilometer;
+
+            return new BusPredictionResponseDto
+            {
+                Line = candidate.Bus.LineNumber,
+                Vehicle = candidate.Bus.VehicleNumber,
+                DistanceInMeters = Math.Round(estimatedRoadDistance),
+                TimeInMinutes = Math.Round(timeInMinutes)
+            };
         }
     }
 }

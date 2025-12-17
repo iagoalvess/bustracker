@@ -12,6 +12,12 @@ namespace BusTracker.API.Middleware
         private readonly ILogger<GlobalExceptionMiddleware> _logger;
         private readonly IHostEnvironment _environment;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="GlobalExceptionMiddleware"/> class.
+        /// </summary>
+        /// <param name="next">The next middleware in the pipeline.</param>
+        /// <param name="logger">The logger instance.</param>
+        /// <param name="environment">The host environment.</param>
         public GlobalExceptionMiddleware(RequestDelegate next, ILogger<GlobalExceptionMiddleware> logger, IHostEnvironment environment)
         {
             _next = next;
@@ -19,6 +25,10 @@ namespace BusTracker.API.Middleware
             _environment = environment;
         }
 
+        /// <summary>
+        /// Invokes the middleware to handle exceptions.
+        /// </summary>
+        /// <param name="context">The HTTP context.</param>
         public async Task InvokeAsync(HttpContext context)
         {
             try
@@ -45,6 +55,12 @@ namespace BusTracker.API.Middleware
             }
         }
 
+        /// <summary>
+        /// Handles the exception by writing a JSON error response.
+        /// </summary>
+        /// <param name="context">The HTTP context.</param>
+        /// <param name="message">The error message.</param>
+        /// <param name="statusCode">The HTTP status code.</param>
         private static async Task HandleExceptionAsync(HttpContext context, string message, int statusCode)
         {
             context.Response.ContentType = "application/json";

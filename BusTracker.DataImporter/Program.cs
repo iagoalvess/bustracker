@@ -7,16 +7,26 @@ using Microsoft.EntityFrameworkCore;
 using NetTopologySuite.Geometries;
 using System.Globalization;
 
-var baseDirectory = AppContext.BaseDirectory;
-var dataDirectory = Path.Combine(baseDirectory, "Data");
+const int Srid = 4326;
+const int ProgressLogInterval = 100000;
+const int BatchSize = 5000;
+const string DataDirectoryName = "Data";
+const string StopsFileName = "stops.txt";
+const string RoutesFileName = "routes.txt";
+const string TripsFileName = "trips.txt";
+const string StopTimesFileName = "stop_times.txt";
+const string DefaultConnectionString = "Host=localhost;Database=bustrackerdb;Username=postgres;Password=123";
 
-var stopsFilePath = Path.Combine(dataDirectory, "stops.txt");
-var routesFilePath = Path.Combine(dataDirectory, "routes.txt");
-var tripsFilePath = Path.Combine(dataDirectory, "trips.txt");
-var stopTimesFilePath = Path.Combine(dataDirectory, "stop_times.txt");
+var baseDirectory = AppContext.BaseDirectory;
+var dataDirectory = Path.Combine(baseDirectory, DataDirectoryName);
+
+var stopsFilePath = Path.Combine(dataDirectory, StopsFileName);
+var routesFilePath = Path.Combine(dataDirectory, RoutesFileName);
+var tripsFilePath = Path.Combine(dataDirectory, TripsFileName);
+var stopTimesFilePath = Path.Combine(dataDirectory, StopTimesFileName);
 
 var connectionString = Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection")
-    ?? "Host=localhost;Database=BusTrackerDb;Username=postgres;Password=123";
+    ?? DefaultConnectionString;
 
 var optionsBuilder = new DbContextOptionsBuilder<AppDbContext>();
 optionsBuilder.UseNpgsql(connectionString, o => o.UseNetTopologySuite());
@@ -37,13 +47,13 @@ using (var context = new AppDbContext(optionsBuilder.Options))
     Console.WriteLine("1. Importing Stops...");
     await context.Database.ExecuteSqlRawAsync("TRUNCATE TABLE \"BusStops\" RESTART IDENTITY CASCADE");
 
-    if (!File.Exists(stopsFilePath)) throw new FileNotFoundException("stops.txt not found", stopsFilePath);
+    if (!File.Exists(stopsFilePath)) throw new FileNotFoundException($"{StopsFileName} not found", stopsFilePath);
 
     using var reader = new StreamReader(stopsFilePath);
     using var csv = new CsvReader(reader, csvConfig);
 
     var records = csv.GetRecords<StopGtfsDTO>();
-    var geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
+    var geometryFactory = new GeometryFactory(new PrecisionModel(), Srid);
     var stopsToSave = new List<BusStop>();
 
     foreach (var record in records)
@@ -66,7 +76,7 @@ using (var context = new AppDbContext(optionsBuilder.Options))
     Console.WriteLine("2. Importing Routes...");
     await context.Database.ExecuteSqlRawAsync("TRUNCATE TABLE \"BusLines\" RESTART IDENTITY CASCADE");
 
-    if (!File.Exists(routesFilePath)) throw new FileNotFoundException("routes.txt not found", routesFilePath);
+    if (!File.Exists(routesFilePath)) throw new FileNotFoundException($"{RoutesFileName} not found", routesFilePath);
 
     using var reader = new StreamReader(routesFilePath);
     using var csv = new CsvReader(reader, csvConfig);
@@ -94,8 +104,8 @@ using (var context = new AppDbContext(optionsBuilder.Options))
     Console.WriteLine("3. Processing Relationships (This may take a while)...");
     await context.Database.ExecuteSqlRawAsync("TRUNCATE TABLE \"BusLineStops\" RESTART IDENTITY CASCADE");
 
-    if (!File.Exists(tripsFilePath)) throw new FileNotFoundException("trips.txt not found", tripsFilePath);
-    if (!File.Exists(stopTimesFilePath)) throw new FileNotFoundException("stop_times.txt not found", stopTimesFilePath);
+    if (!File.Exists(tripsFilePath)) throw new FileNotFoundException($"{TripsFileName} not found", tripsFilePath);
+    if (!File.Exists(stopTimesFilePath)) throw new FileNotFoundException($"{StopTimesFileName} not found", stopTimesFilePath);
 
     var routeMap = await context.BusLines.ToDictionaryAsync(x => x.ExternalId, x => x.Id);
     var stopMap = await context.BusStops.ToDictionaryAsync(x => x.Code, x => x.Id);
@@ -127,7 +137,7 @@ using (var context = new AppDbContext(optionsBuilder.Options))
         foreach (var st in stopTimes)
         {
             rowCount++;
-            if (rowCount % 100000 == 0) Console.Write(".");
+            if (rowCount % ProgressLogInterval == 0) Console.Write(".");
 
             if (!tripToRouteMap.TryGetValue(st.TripId, out var routeGtfsId)) continue;
             if (!routeMap.TryGetValue(routeGtfsId, out var dbLineId)) continue;
@@ -153,7 +163,7 @@ using (var context = new AppDbContext(optionsBuilder.Options))
         });
 
         count++;
-        if (count % 5000 == 0)
+        if (count % BatchSize == 0)
         {
             await context.BusLineStops.AddRangeAsync(batch);
             await context.SaveChangesAsync();

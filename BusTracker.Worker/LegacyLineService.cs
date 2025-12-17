@@ -5,9 +5,16 @@ namespace BusTracker.Worker;
 /// </summary>
 public class LegacyLineService
 {
+    private const int MinColumnsRequired = 2;
+    private const int HeaderRowsToSkip = 1;
+
     private readonly ILogger<LegacyLineService> _logger;
     private Dictionary<string, string> _legacyMap = [];
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="LegacyLineService"/> class.
+    /// </summary>
+    /// <param name="logger">The logger instance.</param>
     public LegacyLineService(ILogger<LegacyLineService> logger)
     {
         _logger = logger;
@@ -29,10 +36,10 @@ public class LegacyLineService
         
         try 
         {
-            foreach (var line in File.ReadLines(filePath).Skip(1))
+            foreach (var line in File.ReadLines(filePath).Skip(HeaderRowsToSkip))
             {
                 var cols = line.Split(';');
-                if (cols.Length >= 2)
+                if (cols.Length >= MinColumnsRequired)
                 {
                     var internalId = cols[0].Trim();
                     var displayNumber = cols[1].Trim();

@@ -8,19 +8,37 @@ using System.Globalization;
 namespace BusTracker.Worker;
 
 /// <summary>
-/// Background service that continuously fetches and processes real-time bus position data.
+/// Background service that periodically fetches real-time bus position data from PBH API
+/// and stores it in the database for prediction calculations.
 /// </summary>
 public class Worker : BackgroundService
 {
+    private const int Srid = 4326;
+    private const int HttpTimeoutSeconds = 30;
+    private const int CacheRefreshIntervalHours = 1;
+    private const int MinCsvColumns = 7;
+    private const int BrazilUtcOffsetHours = -3;
+    private const int MillisecondsPerSecond = 1000;
+    private const string TimestampFormat = "yyyyMMddHHmmss";
+    private const string UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
     private readonly ILogger<Worker> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly BusTrackerSettings _settings;
     private readonly LegacyLineService _legacyLineService;
 
-    private Dictionary<string, string> _cachedLineMap = new();
+    private Dictionary<string, string> _cachedLineMap = [];
     private DateTime _lastCacheUpdate = DateTime.MinValue;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="Worker"/> class.
+    /// </summary>
+    /// <param name="logger">The logger instance.</param>
+    /// <param name="scopeFactory">The service scope factory for creating scoped services.</param>
+    /// <param name="httpClientFactory">The HTTP client factory for making API requests.</param>
+    /// <param name="settings">The bus tracker configuration settings.</param>
+    /// <param name="legacyLineService">The service for translating legacy line codes.</param>
     public Worker(
         ILogger<Worker> logger,
         IServiceScopeFactory scopeFactory,
@@ -35,9 +53,13 @@ public class Worker : BackgroundService
         _legacyLineService = legacyLineService;
     }
 
+    /// <summary>
+    /// Executes the background service, continuously fetching and storing bus positions.
+    /// </summary>
+    /// <param name="stoppingToken">The cancellation token to stop the service.</param>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
+        var geometryFactory = new GeometryFactory(new PrecisionModel(), Srid);
         var culture = CultureInfo.InvariantCulture;
 
         _logger.LogInformation("Worker started. Update interval: {Interval}s", _settings.UpdateIntervalSeconds);
@@ -45,6 +67,7 @@ public class Worker : BackgroundService
         var legacyFilePath = Path.IsPathRooted(_settings.LegacyLineMapPath)
             ? _settings.LegacyLineMapPath
             : Path.Combine(AppContext.BaseDirectory, _settings.LegacyLineMapPath);
+
         _legacyLineService.LoadMap(legacyFilePath);
 
         while (!stoppingToken.IsCancellationRequested)
@@ -59,17 +82,17 @@ public class Worker : BackgroundService
                 _logger.LogError(ex, "Critical error in Worker cycle");
             }
 
-            await Task.Delay(_settings.UpdateIntervalSeconds * 1000, stoppingToken);
+            await Task.Delay(_settings.UpdateIntervalSeconds * MillisecondsPerSecond, stoppingToken);
         }
     }
 
     /// <summary>
-    /// Updates the line cache from the database periodically (every hour).
-    /// Maps both GTFS external IDs and display numbers to display numbers for flexible matching.
+    /// Updates the cached line mapping from the database.
+    /// Cache is refreshed every hour.
     /// </summary>
     private async Task UpdateLineCacheAsync()
     {
-        if (_cachedLineMap.Any() && (DateTime.UtcNow - _lastCacheUpdate).TotalHours < 1)
+        if (_cachedLineMap.Any() && (DateTime.UtcNow - _lastCacheUpdate).TotalHours < CacheRefreshIntervalHours)
             return;
 
         using var scope = _scopeFactory.CreateScope();
@@ -78,7 +101,6 @@ public class Worker : BackgroundService
         try
         {
             var lines = await unitOfWork.BusLines.GetAllAsync();
-
             _cachedLineMap = new Dictionary<string, string>();
 
             foreach (var line in lines)
@@ -100,48 +122,39 @@ public class Worker : BackgroundService
     }
 
     /// <summary>
-    /// Fetches bus positions from the CSV endpoint, parses them, and saves to the database.
-    /// Includes intelligent cleanup of old positions and legacy line number translation.
+    /// Fetches bus positions from the PBH API and stores them in the database.
+    /// Also performs cleanup of old position records.
     /// </summary>
+    /// <param name="geometryFactory">The geometry factory for creating location points.</param>
+    /// <param name="culture">The culture info for parsing numeric values.</param>
     private async Task ProcessBusPositionsAsync(GeometryFactory geometryFactory, CultureInfo culture)
     {
         using var client = _httpClientFactory.CreateClient();
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-        client.Timeout = TimeSpan.FromSeconds(30);
+        client.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
+        client.Timeout = TimeSpan.FromSeconds(HttpTimeoutSeconds);
 
         try
         {
             var csvContent = await client.GetStringAsync(_settings.PbhDataUrl);
             var csvLines = csvContent.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
-            if (csvLines.Length <= 1)
-            {
-                _logger.LogWarning("CSV file empty or contains only header");
-                return;
-            }
-
-            _logger.LogInformation("CSV sample line: {Line}", csvLines[1]);
+            if (csvLines.Length <= 1) return;
 
             var positions = new List<BusPosition>();
             int parseFailures = 0;
+            var brazilOffset = TimeSpan.FromHours(BrazilUtcOffsetHours);
 
             for (int i = 1; i < csvLines.Length; i++)
             {
                 var columns = csvLines[i].Split(';');
-
-                if (columns.Length < 7)
-                {
-                    parseFailures++;
-                    continue;
-                }
+                if (columns.Length < MinCsvColumns) continue;
 
                 try
                 {
-                    if (!DateTime.TryParseExact(columns[1], "yyyyMMddHHmmss", culture, DateTimeStyles.None, out DateTime timestamp))
+                    if (!DateTime.TryParseExact(columns[1], TimestampFormat, culture, DateTimeStyles.None, out DateTime timestamp))
                     {
                         if (!DateTime.TryParse(columns[1], out timestamp))
                         {
-                            if (parseFailures == 0) _logger.LogWarning("Date parsing error on line {Idx}: Value '{Val}'", i, columns[1]);
                             parseFailures++;
                             continue;
                         }
@@ -163,11 +176,14 @@ public class Worker : BackgroundService
                         ? mappedName
                         : translatedLineCode;
 
+
+                    var timestampInUtc = new DateTimeOffset(timestamp, brazilOffset).UtcDateTime;
+
                     var pos = new BusPosition
                     {
                         LineNumber = finalDisplayNumber,
                         VehicleNumber = columns[4],
-                        Timestamp = timestamp.ToUniversalTime(),
+                        Timestamp = timestampInUtc,
                         Location = geometryFactory.CreatePoint(new Coordinate(lon, lat))
                     };
 
@@ -179,29 +195,33 @@ public class Worker : BackgroundService
                 }
             }
 
-            if (parseFailures > 0)
-                _logger.LogWarning("Failed to process {Count} CSV lines (invalid format)", parseFailures);
-
-            if (positions.Any())
+            if (positions.Count != 0)
             {
                 using var scope = _scopeFactory.CreateScope();
                 var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-
-                var retentionThreshold = DateTime.UtcNow.AddMinutes(-_settings.PositionRetentionMinutes);
-                var oldPositions = await unitOfWork.BusPositions.FindAsync(x => x.Timestamp < retentionThreshold);
-                if (oldPositions.Any())
-                {
-                    unitOfWork.BusPositions.RemoveRange(oldPositions);
-                }
 
                 await unitOfWork.BusPositions.AddRangeAsync(positions);
                 await unitOfWork.SaveChangesAsync();
 
                 _logger.LogInformation("Success: {Count} bus positions updated", positions.Count);
-            }
-            else
-            {
-                _logger.LogWarning("No valid positions found to save");
+
+                try
+                {
+                    var retentionThreshold = DateTime.UtcNow.AddMinutes(-_settings.PositionRetentionMinutes);
+                    var query = unitOfWork.BusPositions.GetQueryable()
+                        .Where(x => x.Timestamp < retentionThreshold);
+
+                    var deletedCount = await unitOfWork.ExecuteDeleteAsync(query);
+
+                    if (deletedCount > 0)
+                    {
+                        _logger.LogInformation("Cleanup: Removed {Count} old positions", deletedCount);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning("Minor cleanup warning (Ignored): {Msg}", ex.Message);
+                }
             }
         }
         catch (HttpRequestException ex)

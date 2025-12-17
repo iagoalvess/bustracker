@@ -74,7 +74,6 @@ if (rateLimitSettings.Enabled)
     {
         options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
-        // Fixed Window Rate Limiter for general API
         options.AddFixedWindowLimiter("fixed", opt =>
         {
             opt.PermitLimit = rateLimitSettings.PermitLimit;
@@ -83,7 +82,6 @@ if (rateLimitSettings.Enabled)
             opt.QueueLimit = rateLimitSettings.QueueLimit;
         });
 
-        // Sliding Window for prediction endpoint (more strict)
         options.AddSlidingWindowLimiter("prediction", opt =>
         {
             opt.PermitLimit = 30;
@@ -93,7 +91,6 @@ if (rateLimitSettings.Enabled)
             opt.QueueLimit = 5;
         });
 
-        // Concurrency limiter for search endpoints
         options.AddConcurrencyLimiter("search", opt =>
         {
             opt.PermitLimit = 50;
@@ -110,23 +107,17 @@ app.UseMiddleware<GlobalExceptionMiddleware>();
 
 app.UseCors("AllowAll");
 
-if (app.Environment.IsDevelopment())
+// Swagger always enabled for local development
+app.UseSwagger();
+app.UseSwaggerUI(c =>
 {
-    app.UseSwagger();
-    app.UseSwaggerUI(c =>
-    {
-        c.SwaggerEndpoint("/swagger/v1/swagger.json", "BusTracker API v1");
-        c.DocumentTitle = "BusTracker API - Documentation";
-        c.DefaultModelsExpandDepth(2);
-        c.DefaultModelExpandDepth(2);
-        c.DisplayRequestDuration();
-        c.EnableTryItOutByDefault();
-    });
-}
-else
-{
-    app.UseHttpsRedirection();
-}
+    c.SwaggerEndpoint("/swagger/v1/swagger.json", "BusTracker API v1");
+    c.DocumentTitle = "BusTracker API - Documentation";
+    c.DefaultModelsExpandDepth(2);
+    c.DefaultModelExpandDepth(2);
+    c.DisplayRequestDuration();
+    c.EnableTryItOutByDefault();
+});
 
 if (rateLimitSettings.Enabled)
 {

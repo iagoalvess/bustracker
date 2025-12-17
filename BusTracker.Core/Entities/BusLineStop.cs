@@ -27,11 +27,6 @@ namespace BusTracker.Core.Entities
         public int Sequence { get; set; }
         
         /// <summary>
-        /// Gets or sets the sub-line or variant name (e.g., "VIA SAVASSI").
-        /// </summary>
-        public string? SubLineName { get; set; }
-        
-        /// <summary>
         /// Navigation property to the bus line.
         /// </summary>
         public BusLine BusLine { get; set; } = null!;

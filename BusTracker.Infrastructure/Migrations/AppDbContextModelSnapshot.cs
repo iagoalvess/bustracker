@@ -66,9 +66,6 @@ namespace BusTracker.Infrastructure.Migrations
                     b.Property<int>("Sequence")
                         .HasColumnType("integer");
 
-                    b.Property<string>("SubLineName")
-                        .HasColumnType("text");
-
                     b.HasKey("Id");
 
                     b.HasIndex("BusStopId");
