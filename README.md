@@ -1,40 +1,40 @@
-# BusTracker ??
+# BusTracker
 
-Sistema de rastreamento de ônibus em tempo real para Belo Horizonte, utilizando dados da API pública da PBH (Prefeitura de Belo Horizonte).
+Sistema de rastreamento de Ã´nibus em tempo real para Belo Horizonte, utilizando dados da API pÃºblica da PBH (Prefeitura de Belo Horizonte).
 
-## ?? Descrição
+## DescriÃ§Ã£o
 
-O BusTracker é composto por três componentes principais:
+O BusTracker Ã© composto por trÃªs componentes principais:
 
-- **BusTracker.API** - API REST para consulta de paradas, linhas e previsões de chegada
-- **BusTracker.Worker** - Serviço em background que coleta posições dos ônibus em tempo real
-- **BusTracker.DataImporter** - Utilitário para importar dados GTFS (paradas, linhas e rotas)
+- **BusTracker.API** - API REST para consulta de paradas, linhas e previsÃµes de chegada
+- **BusTracker.Worker** - ServiÃ§o em background que coleta posiÃ§Ãµes dos Ã´nibus em tempo real
+- **BusTracker.DataImporter** - UtilitÃ¡rio para importar dados GTFS (paradas, linhas e rotas)
 
-## ??? Tecnologias
+## Tecnologias
 
 - .NET 10
 - PostgreSQL com PostGIS (suporte geoespacial)
 - Entity Framework Core
 - NetTopologySuite
 
-## ?? Estrutura do Projeto
+## Estrutura do Projeto
 
 ```
 BusTracker/
-??? BusTracker.API/            # API REST
-??? BusTracker.Worker/         # Serviço de coleta de dados
-??? BusTracker.DataImporter/   # Importador de dados GTFS
-??? BusTracker.Core/           # Entidades, interfaces e DTOs
-??? BusTracker.Infrastructure/ # Repositórios e serviços
+   BusTracker.API/            # API REST
+   BusTracker.Worker/         # ServiÃ§o de coleta de dados
+   BusTracker.DataImporter/   # Importador de dados GTFS
+   BusTracker.Core/           # Entidades, interfaces e DTOs
+   BusTracker.Infrastructure/ # RepositÃ³rios e serviÃ§os
 ```
 
-## ?? Pré-requisitos
+## PrÃ©-requisitos
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download)
-- [PostgreSQL](https://www.postgresql.org/download/) com extensão PostGIS
-- Dados GTFS da BHTrans (para importação inicial)
+- [PostgreSQL](https://www.postgresql.org/download/) com extensÃ£o PostGIS
+- Dados GTFS da BHTrans (para importaÃ§Ã£o inicial)
 
-## ?? Como Executar
+## Como Executar
 
 ### 1. Configurar o Banco de Dados
 
@@ -48,7 +48,7 @@ CREATE EXTENSION postgis;
 
 ### 2. Configurar Connection String
 
-Edite os arquivos `appsettings.json` nos projetos `BusTracker.API` e `BusTracker.Worker` se necessário:
+Edite os arquivos `appsettings.json` nos projetos `BusTracker.API` e `BusTracker.Worker` se necessÃ¡rio:
 
 ```json
 {
@@ -65,7 +65,7 @@ cd BusTracker.API
 dotnet ef database update --project ../BusTracker.Infrastructure
 ```
 
-### 4. Importar Dados GTFS (Opcional)
+### 4. Importar Dados GTFS
 
 Coloque os arquivos GTFS (`stops.txt`, `routes.txt`, `trips.txt`, `stop_times.txt`) na pasta `BusTracker.DataImporter/Data/` e execute:
 
@@ -74,7 +74,7 @@ cd BusTracker.DataImporter
 dotnet run
 ```
 
-### 5. Executar os Serviços
+### 5. Executar os ServiÃ§os
 
 **Terminal 1 - API:**
 ```bash
@@ -88,26 +88,25 @@ cd BusTracker.Worker
 dotnet run
 ```
 
-## ?? Documentação da API
+## DocumentaÃ§Ã£o da API
 
-Após iniciar a API, acesse a documentação Swagger em:
+ApÃ³s iniciar a API, acesse a documentaÃ§Ã£o Swagger em:
 
 - http://localhost:5286/swagger
 
-## ?? Endpoints Principais
+## Endpoints Principais
 
-| Método | Endpoint | Descrição |
+| MÃ©todo | Endpoint | DescriÃ§Ã£o |
 |--------|----------|-----------|
-| GET | `/api/bus/stops/nearby` | Busca paradas próximas a uma coordenada |
+| GET | `/api/bus/stops` | Busca as paradas |
 | GET | `/api/bus/stops/{stopId}/lines` | Lista linhas que passam em uma parada |
 | GET | `/api/bus/lines/{lineNumber}/stops` | Lista paradas de uma linha |
 | GET | `/api/bus/lines` | Lista todas as linhas |
-| GET | `/api/bus/predictions` | Previsão de chegada de ônibus |
-| GET | `/health` | Health check da aplicação |
+| GET | `/api/bus/predictions` | PrevisÃ£o de chegada de Ã´nibus |
 
-## ? Configurações
+## ConfiguraÃ§Ãµes
 
-As principais configurações estão em `appsettings.json`:
+As principais configuraÃ§Ãµes estÃ£o em `appsettings.json`:
 
 ```json
 {
@@ -119,7 +118,3 @@ As principais configurações estão em `appsettings.json`:
   }
 }
 ```
-
-## ?? Licença
-
-Este projeto é apenas para fins educacionais e de estudo.
